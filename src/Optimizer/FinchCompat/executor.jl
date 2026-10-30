@@ -200,6 +200,6 @@ By default (`cache=false`), every call is re-optimized for the current inputs. I
 function galley_scheduler(; threshold=2, cache=false, verbose=false)
     AdaptiveExecutor(
         GalleyOptimizer(; verbose=verbose); threshold=threshold, cache=cache,
-        verbose=verbose
+        verbose=verbose,
     )
 end
