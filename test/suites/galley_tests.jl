@@ -704,7 +704,7 @@
             @test !issimilar(stat, with_dcs(StableSet{DC}(scaled)), 2.0)
 
             # AdaptiveExecutor calls issimilar when it revisits a cached plan
-            ctx = Galley.galley_scheduler()
+            ctx = Galley.galley_scheduler(; cache=true)
             for n in (6, 8)
                 A = Tensor(Dense(Dense(Dense(Dense(Element(0.0))))), rand(n, n, n, n))
                 B = Tensor(Dense(Dense(Element(0.0))), rand(n, 4))

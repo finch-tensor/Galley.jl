@@ -91,34 +91,46 @@ function get_stats_list(ctx::GalleyOptimizer, prgm)
 end
 
 """
-    AdaptiveExecutor(ctx::GalleyOptimizer, verbose=false)
+    AdaptiveExecutor(ctx::GalleyOptimizer; threshold=2, cache=false, verbose=false)
 
-Executes a logic program by compiling it with the given compiler `ctx`. Compiled
-codes are cached for each program structure. It first checks the cache for a plan that
-was compiled for similar inputs and only compiles if it doesn't find one.
+Executes a logic program by compiling it with the given compiler `ctx`. By default
+(`cache=false`), the program is re-optimized and recompiled on every call. If
+`cache=true`, compiled codes are cached for each program structure, and the executor
+first checks the cache for a plan that was compiled for inputs whose statistics are
+similar (within a factor of `threshold`), only compiling if it doesn't find one.
 """
 
 @kwdef struct AdaptiveExecutor
     ctx::GalleyOptimizer
     threshold::Float64
+    cache::Bool
     verbose
 end
 
 function Base.:(==)(a::AdaptiveExecutor, b::AdaptiveExecutor)
-    a.ctx == b.ctx && a.threshold == b.threshold && a.verbose == b.verbose
+    a.ctx == b.ctx && a.threshold == b.threshold && a.cache == b.cache &&
+        a.verbose == b.verbose
 end
 function Base.hash(a::AdaptiveExecutor, h::UInt)
-    hash(AdaptiveExecutor, hash(a.ctx, hash(a.threshold, hash(a.verbose, h))))
+    hash(
+        AdaptiveExecutor,
+        hash(a.ctx, hash(a.threshold, hash(a.cache, hash(a.verbose, h)))),
+    )
 end
 
-function AdaptiveExecutor(ctx::GalleyOptimizer; threshold=2, verbose=false)
-    AdaptiveExecutor(ctx, threshold, verbose)
+function AdaptiveExecutor(ctx::GalleyOptimizer; threshold=2, cache=false, verbose=false)
+    AdaptiveExecutor(ctx, threshold, cache, verbose)
 end
 function Galley.set_options(
-    ctx::AdaptiveExecutor; threshold=2, verbose=ctx.verbose, tag=:global, kwargs...
+    ctx::AdaptiveExecutor;
+    threshold=2,
+    cache=ctx.cache,
+    verbose=ctx.verbose,
+    tag=:global,
+    kwargs...,
 )
     AdaptiveExecutor(
-        Galley.set_options(ctx.ctx; verbose=verbose, kwargs...), threshold, verbose
+        Galley.set_options(ctx.ctx; verbose=verbose, kwargs...), threshold, cache, verbose
     )
 end
 
@@ -127,6 +139,14 @@ galley_codes = OrderedDict{
     Tuple{GalleyOptimizer,Number,LogicNode},Vector{Tuple{StatsList,Tuple{Function,Expr}}}
 }()
 function (ctx::AdaptiveExecutor)(prgm)
+    if !ctx.cache
+        thunk = Galley.logic_executor_code(ctx.ctx, prgm)
+        if ctx.verbose
+            println("Executing:")
+            display(thunk)
+        end
+        return Base.invokelatest(eval(thunk), prgm)
+    end
     cur_stats_list::StatsList = get_stats_list(ctx.ctx, prgm)
     all_stats_lists::Vector{Tuple{StatsList,Tuple{Function,Expr}}} = get!(
         galley_codes,
@@ -170,12 +190,16 @@ function (ctx::AdaptiveExecutorCode)(prgm)
 end
 
 """
-    galley_scheduler(verbose = false, estimator=DCStats)
+    galley_scheduler(; threshold=2, cache=false, verbose=false)
 
 The galley scheduler uses the sparsity patterns of the inputs to optimize the computation.
-The first set of inputs given to galley is used to optimize, and the `estimator` is used to
-estimate the sparsity of intermediate computations during optimization.
+By default (`cache=false`), every call is re-optimized for the current inputs. If
+`cache=true`, compiled plans are reused for later inputs whose statistics are similar
+(within a factor of `threshold`) to the inputs the plan was optimized for.
 """
-galley_scheduler(; threshold=2, verbose=false) = AdaptiveExecutor(
-    GalleyOptimizer(; verbose=verbose); threshold=threshold, verbose=verbose
-)
+function galley_scheduler(; threshold=2, cache=false, verbose=false)
+    AdaptiveExecutor(
+        GalleyOptimizer(; verbose=verbose); threshold=threshold, cache=cache,
+        verbose=verbose,
+    )
+end
