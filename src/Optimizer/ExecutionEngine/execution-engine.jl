@@ -177,10 +177,39 @@ function translate_rhs(
     end
 end
 
+# The element type of a query's right hand side: the `return_type` of each operator on
+# its arguments' element types, as the default scheduler infers it. `translate_rhs`
+# folds a MapJoin over a binary operator, so this folds it in the same order.
+function rhs_eltype(alias_eltypes, rhs::PlanNode)
+    if rhs.kind === Value
+        return typeof(rhs.val)
+    elseif rhs.kind === Input
+        return eltype(rhs.tns.val)
+    elseif rhs.kind === Alias
+        return alias_eltypes[rhs.name]
+    elseif rhs.kind === MapJoin
+        op = rhs.op.val
+        arg_types = [rhs_eltype(alias_eltypes, arg) for arg in rhs.args]
+        if is_binary(op)
+            T = arg_types[1]
+            for S in arg_types[2:end]
+                T = Galley.return_type(Galley.DefaultAlgebra(), op, S, T)
+            end
+            return T
+        end
+        return Galley.return_type(Galley.DefaultAlgebra(), op, arg_types...)
+    end
+    throw(ErrorException("Can't infer the element type of $rhs"))
+end
+
 # To be executed, a query must be in the following format:
 # Query(name, Materialize(formats..., index_order..., Aggregate(op, idxs..., map_expr)))
+# `alias_eltypes` maps the names of earlier queries to their element types, and is
+# updated with this one's.
 # TODO: use loop_order to label indexes
-function execute_query(alias_dict, q::PlanNode, verbose, cannonicalize, return_prgm)
+function execute_query(
+    alias_dict, alias_eltypes, q::PlanNode, verbose, cannonicalize, return_prgm
+)
     tensor_counter = [0]
     index_sym_dict = OrderedDict{IndexExpr,IndexExpr}()
     name = q.name.name
@@ -196,10 +225,25 @@ function execute_query(alias_dict, q::PlanNode, verbose, cannonicalize, return_p
     rhs_instance = translate_rhs(
         alias_dict, tensor_counter, index_sym_dict, rhs_expr, cannonicalize, return_prgm
     )
+    # The output holds the values the expression produces, so it is typed after them
+    # rather than after its fill. The fill is just one of those values, and its type
+    # can be narrower than the rest: `ifelse(c, x, 0)` has an Int64 fill even when x
+    # holds floats.
+    output_eltype = Galley.fixpoint_type(
+        agg_op, output_fill_value, rhs_eltype(alias_eltypes, rhs_expr)
+    )
+    if output_eltype === Union{}
+        output_eltype = typeof(output_fill_value)
+    end
+    if !(output_fill_value isa output_eltype)
+        output_fill_value = convert(output_eltype, output_fill_value)
+    end
+    alias_eltypes[name] = output_eltype
 
     output_tensor = initialize_tensor(output_formats,
         output_dimensions,
-        output_fill_value)
+        output_fill_value;
+        Tv=output_eltype)
     output_name = cannonicalize ? :output_tensor : name
     output_access = initialize_access(output_name,
         output_tensor,
@@ -239,7 +283,7 @@ function execute_query(alias_dict, q::PlanNode, verbose, cannonicalize, return_p
 
     if return_prgm
         output_tensor_init = tensor_initializer(
-            output_formats, output_dimensions, output_fill_value
+            output_formats, output_dimensions, output_fill_value; Tv=output_eltype
         )
         return :($output_name = $output_tensor_init), prgm_instance
     end
@@ -253,11 +297,12 @@ end
 
 function execute_plan(cse_plan::PlanNode, verbose)
     alias_result = OrderedDict{IndexExpr,Any}()
+    alias_eltypes = OrderedDict{IndexExpr,Type}()
     for query in cse_plan.queries
         verbose > 2 && println("--------------- Computing: $(query.name) ---------------")
         verbose > 2 && println(query)
         verbose > 3 && validate_physical_query(query)
-        execute_query(alias_result, query, verbose, true, false)
+        execute_query(alias_result, alias_eltypes, query, verbose, true, false)
     end
     return alias_result
 end
@@ -265,8 +310,11 @@ end
 function get_execute_code(cse_plan::PlanNode, verbose)
     tensor_inits = []
     bodies = []
+    alias_eltypes = OrderedDict{IndexExpr,Type}()
     for query in cse_plan.queries
-        tensor_init, body = execute_query(OrderedDict(), query, verbose, false, true)
+        tensor_init, body = execute_query(
+            OrderedDict(), alias_eltypes, query, verbose, false, true
+        )
         push!(tensor_inits, tensor_init)
         push!(bodies, body)
     end

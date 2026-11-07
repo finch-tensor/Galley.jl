@@ -1122,6 +1122,27 @@ end
                     @test compute(sum(lazy(A) .* 0; dims=1)) == zeros(1, 7)
                     @test sum(A .* 0) == 0
                 end
+
+                # The galley scheduler typed outputs after their fill values.
+                let
+                    c = Tensor(Dense(Element(false)), [true, false])
+                    x = Tensor(Dense(Element(0.0)), [1.5, 2.5])
+                    y = ifelse.(c, x, 0)
+                    @test y == [1.5, 0.0]
+                    @test eltype(y) == Union{Float64,Int64}
+                    pick(c, a, b) = ifelse(c, promote(a, b)...)
+                    y = pick.(c, x, 0)
+                    @test y == [1.5, 0.0]
+                    @test eltype(y) == Float64
+                    @test compute(sum(lazy(pick.(c, x, 0))))[] == 1.5
+
+                    A = Tensor(Dense(SparseList(Element(0.0))), [1.0 0.0; 0.0 3.0])
+                    M = Tensor(Dense(SparseList(Element(0.0))), [2.0 0.0; 0.0 3.0])
+                    Q = A ./ M
+                    y = pick.(isnan.(Q), 0, Q)
+                    @test y == [0.5 0.0; 0.0 1.0]
+                    @test eltype(y) == Float64
+                end
             end
         end
     end
