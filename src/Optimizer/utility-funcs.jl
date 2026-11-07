@@ -51,8 +51,10 @@ function get_dim_type(dim_size)
     end
 end
 
-function initialize_tensor(formats, dims, fill_val; copy_data=nothing, stats=nothing)
-    B = Element(fill_val)
+function initialize_tensor(
+    formats, dims, fill_val; Tv=typeof(fill_val), copy_data=nothing, stats=nothing
+)
+    B = Element{fill_val,Tv}()
     for i in range(1, length(dims))
         DT = get_dim_type(dims[i])
         if formats[i] == t_sparse_list
@@ -74,8 +76,8 @@ function initialize_tensor(formats, dims, fill_val; copy_data=nothing, stats=not
     end
 end
 
-function tensor_initializer(formats, dims, fill_val)
-    B = :(Element($fill_val))
+function tensor_initializer(formats, dims, fill_val; Tv=typeof(fill_val))
+    B = :(Element{$fill_val,$Tv}())
     for i in range(1, length(dims))
         DT = get_dim_type(dims[i])
         if formats[i] == t_sparse_list

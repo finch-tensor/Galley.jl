@@ -206,17 +206,47 @@ function distribute_mapjoins(plan::PlanNode, use_dnf)
     end
 end
 
+# The indices an expression ranges over, or `nothing` if they aren't known. This reads
+# the plan's structure rather than its stats, since nodes built by rewrites have none.
+function plan_indices(n::PlanNode)
+    if n.kind === Value
+        return Set{IndexExpr}()
+    elseif n.kind === Input || (n.kind === Alias && !isempty(n.idxs))
+        return Set{IndexExpr}(idx.name for idx in n.idxs)
+    elseif n.kind === Alias
+        return isnothing(n.stats) ? nothing : Set{IndexExpr}(get_index_set(n.stats))
+    elseif n.kind === MapJoin
+        idxs = Set{IndexExpr}()
+        for arg in n.args
+            arg_idxs = plan_indices(arg)
+            isnothing(arg_idxs) && return nothing
+            union!(idxs, arg_idxs)
+        end
+        return idxs
+    elseif n.kind === Aggregate
+        arg_idxs = plan_indices(n.arg)
+        isnothing(arg_idxs) && return nothing
+        return setdiff(arg_idxs, [idx.name for idx in n.idxs])
+    end
+    return nothing
+end
+
+is_index_free(n::PlanNode) = plan_indices(n) == Set{IndexExpr}()
+
 function remove_extraneous_mapjoins(plan::PlanNode)
     Rewrite(
         Fixpoint(
             Postwalk(
                 Chain([
-                    (@rule MapJoin(~f, ~x..., ~v) =>
-                        v where {(v.kind == Value && isannihilator(f.val, v.val))}),
-                    (@rule MapJoin(~f, ~v, ~x...) =>
-                        v where {(v.kind == Value && isannihilator(f.val, v.val))}),
+                    # An annihilating constant decides the value of a MapJoin, but not its
+                    # shape: the other arguments may still carry indices, which the
+                    # enclosing Materialize or Aggregate expects to find. So the MapJoin
+                    # is only collapsed when they carry none.
                     (@rule MapJoin(~f, ~x..., ~v, ~y...) =>
-                        v where {(v.kind == Value && isannihilator(f.val, v.val))}),
+                        v where {(
+                            v.kind == Value && isannihilator(f.val, v.val) &&
+                            all(is_index_free, x) && all(is_index_free, y)
+                        )}),
                     (@rule MapJoin(~f, ~x) => x where {(isunarynull(f.val))})]),
             ),
         ),
