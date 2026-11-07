@@ -1099,6 +1099,29 @@ end
                     B = compute(expanddims(sum(lazy(A)); dims=1))
                     @test size(B) == (1,)
                 end
+
+                #https://github.com/finch-tensor/Galley.jl/issues/27
+                let
+                    A = Tensor(Dense(Dense(Element(0.0))), ones(5, 7))
+                    S = Tensor(Dense(SparseList(Element(0.0))), [1.0 0.0; 0.0 2.0])
+                    B = Tensor(Dense(Dense(Element(false))), rand(Bool, 5, 7))
+                    C = Tensor(Dense(Dense(Dense(Element(0.0)))), ones(2, 3, 4))
+
+                    @test A .* 0 == zeros(5, 7)
+                    @test 0 .* A == zeros(5, 7)
+                    @test A .+ Inf == fill(Inf, 5, 7)
+                    @test min.(A, -Inf) == fill(-Inf, 5, 7)
+                    @test max.(A, Inf) == fill(Inf, 5, 7)
+                    @test B .& false == falses(5, 7)
+                    @test B .| true == trues(5, 7)
+                    @test A .* 0 .+ 1 == ones(5, 7)
+                    @test S .* 0 == zeros(2, 2)
+                    @test eltype(S .* 0) == Float64
+                    @test C .* 0 == zeros(2, 3, 4)
+                    @test compute(lazy(A) .* 0) == zeros(5, 7)
+                    @test compute(sum(lazy(A) .* 0; dims=1)) == zeros(1, 7)
+                    @test sum(A .* 0) == 0
+                end
             end
         end
     end
